@@ -11,8 +11,16 @@ local SITTING = { id = 1289723, name = "Welcoming Campfire" } -- the 60 s countd
 local BENEFIT = { id = 1229741, name = "Camp Benefits" }      -- the buff you sit for
 
 local SIT_SECONDS = 60
-local REFRESH_BELOW = 15 * 60 -- show the button again when the buff has less than this left
-local NO_AURA_GRACE = 3       -- seconds to wait for the countdown aura after clicking
+local NO_AURA_GRACE = 3 -- seconds to wait for the countdown aura after clicking
+
+local DEFAULTS = {
+    locked = true,
+    refreshMinutes = 15, -- show the button again when the buff has less than this left
+}
+
+local db -- CampfireSitDB once loaded
+
+local function Print(msg) print("|cffff8c1aCampfire Sit|r: " .. msg) end
 
 -- Aura lookup ---------------------------------------------------------------
 
@@ -71,17 +79,27 @@ timerText:SetPoint("CENTER")
 timer:RegisterForDrag("LeftButton")
 timer:EnableMouse(true)
 
--- Shift-drag moves the frame; the position is saved.
-local function StartMove() if IsShiftKeyDown() then holder:StartMoving() end end
+-- Dragging works only while unlocked; the position is saved.
+local function StartMove() if not db.locked then holder:StartMoving() end end
 local function StopMove()
     holder:StopMovingOrSizing()
     local point, _, relPoint, x, y = holder:GetPoint()
-    CampfireSitDB.pos = { point, relPoint, x, y }
+    db.pos = { point, relPoint, x, y }
 end
 button:SetScript("OnDragStart", StartMove)
 button:SetScript("OnDragStop", StopMove)
 timer:SetScript("OnDragStart", StartMove)
 timer:SetScript("OnDragStop", StopMove)
+
+local function ApplyPosition()
+    holder:ClearAllPoints()
+    local pos = db.pos
+    if pos then
+        holder:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4])
+    else
+        holder:SetPoint("CENTER", 0, -150)
+    end
+end
 
 -- State ---------------------------------------------------------------------
 
@@ -90,6 +108,7 @@ timer:SetScript("OnDragStop", StopMove)
 local clickedAt
 
 local function Update()
+    if not db then return end
     local now = GetTime()
     local _, sitExpires = FindBuff(SITTING)
 
@@ -116,10 +135,16 @@ local function Update()
     timer:Hide()
 
     -- Not sitting: offer the button near a fire unless the buff is still fresh.
+    -- While unlocked it always shows, so it can be dragged into place.
     local nearFire = FindBuff(NEARBY) ~= nil
     local _, benefitExpires = FindBuff(BENEFIT)
-    local fresh = benefitExpires and Remaining(benefitExpires) >= REFRESH_BELOW
-    if nearFire and not fresh and not UnitAffectingCombat("player") then
+    local fresh = benefitExpires and Remaining(benefitExpires) >= db.refreshMinutes * 60
+    if not db.locked then
+        button:SetText(nearFire and "Sit by the fire" or "Drag me")
+        button:Show()
+        holder:Show()
+    elseif nearFire and not fresh and not UnitAffectingCombat("player") then
+        button:SetText("Sit by the fire")
         button:Show()
         holder:Show()
     else
@@ -128,10 +153,108 @@ local function Update()
 end
 
 button:SetScript("OnClick", function()
+    if not FindBuff(NEARBY) then return end -- the unlocked preview
     DoEmote("SIT")
     clickedAt = GetTime()
     Update()
 end)
+
+-- Options panel -------------------------------------------------------------
+
+local panel = CreateFrame("Frame")
+panel.name = "Campfire Sit"
+panel:Hide()
+
+local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+title:SetPoint("TOPLEFT", 16, -16)
+title:SetText("Campfire Sit")
+
+local lockBox = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+lockBox:SetPoint("TOPLEFT", title, "BOTTOMLEFT", -2, -16)
+local lockLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+lockLabel:SetPoint("LEFT", lockBox, "RIGHT", 4, 0)
+lockLabel:SetText("Lock button position (unlock to drag it)")
+
+local sliderLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+sliderLabel:SetPoint("TOPLEFT", lockBox, "BOTTOMLEFT", 2, -24)
+sliderLabel:SetWidth(420)
+sliderLabel:SetJustifyH("LEFT")
+
+local slider = CreateFrame("Slider", nil, panel)
+slider:SetPoint("TOPLEFT", sliderLabel, "BOTTOMLEFT", 0, -12)
+slider:SetSize(260, 17)
+slider:SetOrientation("HORIZONTAL")
+slider:SetMinMaxValues(0, 60)
+slider:SetValueStep(1)
+slider:SetObeyStepOnDrag(true)
+slider:SetThumbTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
+local sliderBg = slider:CreateTexture(nil, "BACKGROUND")
+sliderBg:SetPoint("LEFT", 0, 0)
+sliderBg:SetPoint("RIGHT", 0, 0)
+sliderBg:SetHeight(6)
+sliderBg:SetColorTexture(0.2, 0.2, 0.2, 0.9)
+local sliderMin = slider:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+sliderMin:SetPoint("TOPLEFT", slider, "BOTTOMLEFT", 0, -2)
+sliderMin:SetText("0")
+local sliderMax = slider:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+sliderMax:SetPoint("TOPRIGHT", slider, "BOTTOMRIGHT", 0, -2)
+sliderMax:SetText("60")
+
+local resetButton = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+resetButton:SetPoint("TOPLEFT", slider, "BOTTOMLEFT", 0, -32)
+resetButton:SetSize(160, 24)
+resetButton:SetText("Reset position")
+
+local function UpdateSliderLabel()
+    local m = db.refreshMinutes
+    if m == 0 then
+        sliderLabel:SetText("Show the button again only when Camp Benefits has run out")
+    else
+        sliderLabel:SetFormattedText("Show the button again when Camp Benefits has less than |cffffd100%d min|r left", m)
+    end
+end
+
+local function SetLocked(locked)
+    db.locked = locked
+    lockBox:SetChecked(locked)
+    Update()
+end
+
+lockBox:SetScript("OnClick", function(self) SetLocked(self:GetChecked() and true or false) end)
+slider:SetScript("OnValueChanged", function(_, value)
+    db.refreshMinutes = math.floor(value + 0.5)
+    UpdateSliderLabel()
+    Update()
+end)
+resetButton:SetScript("OnClick", function()
+    db.pos = nil
+    ApplyPosition()
+end)
+panel:SetScript("OnShow", function()
+    lockBox:SetChecked(db.locked)
+    slider:SetValue(db.refreshMinutes)
+    UpdateSliderLabel()
+end)
+
+local category
+local function RegisterPanel()
+    if Settings and Settings.RegisterCanvasLayoutCategory then
+        category = Settings.RegisterCanvasLayoutCategory(panel, panel.name)
+        Settings.RegisterAddOnCategory(category)
+    elseif InterfaceOptions_AddCategory then
+        InterfaceOptions_AddCategory(panel)
+    end
+end
+
+local function OpenPanel()
+    if category and Settings.OpenToCategory then
+        Settings.OpenToCategory(category:GetID())
+    elseif InterfaceOptionsFrame_OpenToCategory then
+        -- Called twice: the first call only opens the frame on old clients.
+        InterfaceOptionsFrame_OpenToCategory(panel)
+        InterfaceOptionsFrame_OpenToCategory(panel)
+    end
+end
 
 -- Events --------------------------------------------------------------------
 
@@ -145,26 +268,43 @@ events:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" then
         if arg1 ~= ADDON then return end
         CampfireSitDB = CampfireSitDB or {}
-        local pos = CampfireSitDB.pos
-        if pos then
-            holder:ClearAllPoints()
-            holder:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4])
+        db = CampfireSitDB
+        for k, v in pairs(DEFAULTS) do
+            if db[k] == nil then db[k] = v end
         end
+        ApplyPosition()
+        RegisterPanel()
         events:UnregisterEvent("ADDON_LOADED")
     end
     Update()
 end)
 
--- Ticks the countdown and catches the buff dropping under 15 minutes.
+-- Ticks the countdown and catches the buff dropping under the refresh window.
 C_Timer.NewTicker(0.2, Update)
 
 -- Slash command --------------------------------------------------------------
 
 SLASH_CAMPFIRESIT1 = "/campsit"
 SlashCmdList.CAMPFIRESIT = function(msg)
-    msg = strtrim(msg or ""):lower()
-    if msg == "auras" then
-        print("|cffff8c1aCampfire Sit|r: your buffs")
+    local cmd, arg = strtrim(msg or ""):lower():match("^(%S*)%s*(.-)$")
+    if cmd == "" or cmd == "config" or cmd == "options" then
+        OpenPanel()
+    elseif cmd == "lock" then
+        SetLocked(true)
+        Print("button locked.")
+    elseif cmd == "unlock" then
+        SetLocked(false)
+        Print("button unlocked, drag it where you want it.")
+    elseif cmd == "minutes" and tonumber(arg) then
+        db.refreshMinutes = math.max(0, math.min(60, math.floor(tonumber(arg))))
+        Print(("button shows again when Camp Benefits has less than %d min left."):format(db.refreshMinutes))
+        Update()
+    elseif cmd == "reset" then
+        db.pos = nil
+        ApplyPosition()
+        Print("position reset.")
+    elseif cmd == "auras" then
+        Print("your buffs")
         for i = 1, 40 do
             local name, spellId, expirationTime
             if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
@@ -180,14 +320,12 @@ SlashCmdList.CAMPFIRESIT = function(msg)
             print(("  %s (id %s) %s"):format(name, tostring(spellId),
                 left == math.huge and "no expiry" or ("%dm %ds left"):format(left / 60, left % 60)))
         end
-    elseif msg == "reset" then
-        CampfireSitDB.pos = nil
-        holder:ClearAllPoints()
-        holder:SetPoint("CENTER", 0, -150)
-        print("|cffff8c1aCampfire Sit|r: position reset.")
     else
-        print("|cffff8c1aCampfire Sit|r: shift-drag the button to move it.")
-        print("  /campsit auras - list your buffs with spell IDs")
+        Print("commands")
+        print("  /campsit - open the options")
+        print("  /campsit lock | unlock - lock or free the button position")
+        print("  /campsit minutes <0-60> - when to show the button again")
         print("  /campsit reset - move the button back to the middle")
+        print("  /campsit auras - list your buffs with spell IDs")
     end
 end
