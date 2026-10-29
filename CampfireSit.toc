@@ -1,0 +1,8 @@
+## Interface: 16001
+## Title: Campfire Sit
+## Notes: Shows a Sit button near campfires and counts down the 60 seconds until the camp buff lands.
+## Author: di2pojo
+## Version: 1.0.0
+## SavedVariables: CampfireSitDB
+
+CampfireSit.lua
