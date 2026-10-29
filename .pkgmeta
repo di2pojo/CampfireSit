@@ -1,0 +1,5 @@
+package-as: CampfireSit
+
+ignore:
+  - README.md
+  - media
